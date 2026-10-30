@@ -1,0 +1,91 @@
+---
+title: "DataCleaningProject"
+format: pdf
+---
+I extracted 5 users from the Enron Email Dataset created by CMU. Here is the link: https://www.cs.cmu.edu/~enron/.
+
+```{r}
+#Part 1: find every email file
+people <- c("allen-p", "arnold-j", "arora-h", "badeer-r", "bailey-s")
+pat    <- paste(people, collapse = "|")
+
+files <- list.files(".", recursive = TRUE, full.names = TRUE)
+files <- files[grepl(paste0("/(", pat, ")/"), files)]
+length(files)
+
+#Part 2- read the header of one email
+read_email <- function(path) {
+  lines <- readLines(path, warn = FALSE, encoding = "latin1")
+
+  blank <- which(trimws(lines) == "")[1]
+  if (is.na(blank)) blank <- length(lines) + 1
+  head <- paste(lines[seq_len(blank - 1)], collapse = "\n")
+
+  #Wrap onto new lines starting with a space/tab
+  head <- gsub("\n[ \t]+", " ", head)
+  head <- strsplit(head, "\n")[[1]]
+
+  #returns the text after "To:"
+  grab <- function(name) {
+    hit <- grep(paste0("^", name, ":"), head, value = TRUE)[1]
+    sub(paste0("^", name, ":[ ]*"), "", hit)
+  }
+
+  data.frame(file = path,
+             from = grab("From"), to = grab("To"), cc = grab("Cc"),
+             subject = grab("Subject"), date = grab("Date"),
+             x_from = grab("X-From"), x_folder = grab("X-Folder"),
+             stringsAsFactors = FALSE)
+}
+
+#Part 3- read all emails into one table
+emails <- do.call(rbind, lapply(files, read_email))
+emails$id      <- seq_len(nrow(emails))
+emails$mailbox <- sub(paste0(".*/(", pat, ")/.*"), "\\1", emails$file)
+emails$folder  <- sub(paste0(".*/(?:", pat, ")/([^/]+)/.*"), "\\1", emails$file, perl = TRUE)
+
+#Part 4- make all missing values look the same
+#some headers are absent (NA) and some are present but blank
+emails[] <- lapply(emails, function(x) ifelse(trimws(x) == "", NA, x))
+colSums(is.na(emails))   # how much is missing in each column
+
+#clean up sender names
+# "Arora, Harry </O=ENRON/...>"  and  "Harry Arora"  to "harry arora"
+clean_name <- function(x) {
+  x <- gsub('"', "", x)
+  x <- sub("\\s*<.*$", "", x)#drop <...> part
+  x <- trimws(x)
+  x <- ifelse(grepl(",", x), sub("^(.*),\\s*(.*)$", "\\2 \\1", x), x)
+  tolower(x)
+}
+emails$sender_name <- clean_name(emails$x_from)
+emails$from        <- tolower(emails$from)
+
+#Part 5-fix dates
+# "Tue, 4 Dec 2001 10:30:17 -0800 (PST)" to 2001-12-04
+emails$date_clean <- as.Date(sub("^[A-Za-z]+, ", "", emails$date), format = "%d %b %Y")
+
+#Part6- one row per recipientt
+recipients <- strsplit(emails$to, ",\\s*")
+recipients_long <- data.frame(
+  id        = rep(emails$id, lengths(recipients)),
+  recipient = tolower(trimws(unlist(recipients))),
+  stringsAsFactors = FALSE
+)
+nrow(recipients_long)
+
+#Part 7- handle impossible dates
+sum(emails$date_clean < as.Date("1999-01-01"), na.rm = TRUE)   # how many
+emails$date_clean[which(emails$date_clean < as.Date("1999-01-01"))] <- NA
+
+#Part 8- sort and save
+emails <- emails[order(emails$date_clean), ]
+write.csv(emails,          "emails_clean.csv",     row.names = FALSE)
+write.csv(recipients_long, "recipients_long.csv",  row.names = FALSE)
+
+head(emails[, c("mailbox", "folder", "sender_name", "subject", "date_clean")])
+
+#barplot
+barplot(table(format(emails$date_clean, "%Y")), main = "Emails per year")
+```
+
